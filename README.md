@@ -28,6 +28,12 @@ B 轨道
 状态栏（片名、时长、重叠时长、B 偏移）
 ```
 
+## 下载
+
+Windows 10/11 64 位，直接下 exe 双击运行，不用装 Python：
+
+[下载 v0.0.1](https://github.com/xc278260759/video-clip-compare/releases/download/v0.0.1/VideoClipCompare-0.0.1.exe)
+
 ## 运行
 
 需要 Python 3.7+，依赖三个库：
