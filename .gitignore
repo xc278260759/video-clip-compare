@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+_test/
+icon_src.png
+UI布局方案.png
