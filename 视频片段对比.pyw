@@ -412,30 +412,29 @@ class App(object):
         dlg.resizable(False, False)
         ans = {"v": None}
 
-        tk.Label(dlg, text="A、B 都已有视频，这条要放到哪里？\n" + os.path.basename(path),
-                 bg=C_BG, fg=C_FG, font=FONT, justify="left", wraplength=380,
-                 anchor="w").pack(padx=20, pady=(16, 10), fill="x")
-
-        row = tk.Frame(dlg, bg=C_BG)
-        row.pack(padx=20, pady=(0, 12))
+        head = tk.Frame(dlg, bg=C_BG)
+        head.pack(fill="x", padx=24, pady=(20, 16))
+        tk.Label(head, text="这条视频放到哪一轨？", bg=C_BG, fg=C_FG,
+                 font=FONT_B, anchor="w").pack(fill="x")
+        tk.Label(head, text=os.path.basename(path), bg=C_BG, fg=C_DIM, font=FONT_S,
+                 wraplength=320, justify="left", anchor="w").pack(fill="x", pady=(6, 0))
 
         def pick(v):
             ans["v"] = v
             dlg.destroy()
 
-        for key, color, clip in (("a", C_TRACK_A, self.a), ("b", C_TRACK_B, self.b)):
-            col = tk.Frame(row, bg=C_BG)
-            col.pack(side="left", padx=(0, 12))
-            tk.Button(col, text="替换 " + key.upper(), command=lambda k=key: pick(k),
+        row = tk.Frame(dlg, bg=C_BG)
+        row.pack(padx=24, pady=(0, 16))
+        for key, color in (("a", C_TRACK_A), ("b", C_TRACK_B)):
+            tk.Button(row, text="替换 " + key.upper(), command=lambda k=key: pick(k),
                       bg=color, fg="#ffffff", activebackground=color, activeforeground="#ffffff",
-                      relief="flat", bd=0, font=FONT_B, width=10, pady=6,
-                      cursor="hand2").pack(fill="x")
-            tk.Label(col, text=(clip.name if clip else "（空）"), bg=C_BG, fg=C_DIM, font=FONT_S,
-                     width=22, anchor="w", wraplength=180).pack(pady=(4, 0))
+                      relief="flat", bd=0, highlightthickness=0, takefocus=0,
+                      font=FONT_B, width=12, pady=9, cursor="hand2").pack(side="left", padx=(0, 10))
 
-        tk.Button(dlg, text="取消", command=dlg.destroy, bg=C_BG2, fg=C_FG,
+        tk.Button(dlg, text="取消", command=dlg.destroy, bg=C_BG2, fg=C_DIM,
                   activebackground="#333333", activeforeground=C_FG, relief="flat", bd=0,
-                  font=FONT_S, padx=18, pady=3, cursor="hand2").pack(pady=(0, 14))
+                  highlightthickness=0, takefocus=0, font=FONT_S, width=8, pady=4,
+                  cursor="hand2").pack(pady=(0, 18))
 
         dlg.bind("<Escape>", lambda e: dlg.destroy())
         dlg.update_idletasks()
