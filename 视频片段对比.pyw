@@ -64,6 +64,73 @@ def fmt_short(t):
     return "%d:%02d" % (m, s)
 
 
+class FileDrop(object):
+    """接收资源管理器拖进来的文件（WM_DROPFILES），不依赖 tkdnd 等外部组件
+
+    注意：窗口过程在 Tcl 消息泵内部被回调，这里只记录路径，
+    绝不调用 tkinter，交给主循环轮询后再处理。
+    """
+
+    WM_DROPFILES = 0x0233
+    GWLP_WNDPROC = -4
+
+    def __init__(self, root):
+        self.user32 = ctypes.windll.user32
+        self.shell32 = ctypes.windll.shell32
+        self.queue = []
+        self.old = None
+        self.ok = False
+        try:
+            root.update_idletasks()
+            child = root.winfo_id()
+            hwnd = self.user32.GetParent(child) or child
+            self.hwnd = hwnd
+            self.shell32.DragAcceptFiles(ctypes.c_void_p(hwnd), True)
+
+            self.WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_uint,
+                                              ctypes.c_size_t, ctypes.c_ssize_t)
+            self._proc = self.WNDPROC(self._wndproc)
+            self.user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            self.user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+            self.user32.CallWindowProcW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+                                                    ctypes.c_size_t, ctypes.c_ssize_t]
+            self.user32.CallWindowProcW.restype = ctypes.c_ssize_t
+            self.old = self.user32.SetWindowLongPtrW(ctypes.c_void_p(hwnd), self.GWLP_WNDPROC,
+                                                     ctypes.cast(self._proc, ctypes.c_void_p))
+            self.ok = bool(self.old)
+        except Exception:
+            self.ok = False
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == self.WM_DROPFILES:
+            try:
+                self._handle(wparam)
+            except Exception:
+                pass
+            return 0
+        if self.old:
+            return self.user32.CallWindowProcW(self.old, hwnd, msg, wparam, lparam)
+        return self.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _handle(self, hdrop):
+        n = self.shell32.DragQueryFileW(ctypes.c_void_p(hdrop), 0xFFFFFFFF, None, 0)
+        paths = []
+        for i in range(int(n)):
+            buf = ctypes.create_unicode_buffer(1024)
+            self.shell32.DragQueryFileW(ctypes.c_void_p(hdrop), i, buf, 1024)
+            if buf.value:
+                paths.append(buf.value)
+        self.shell32.DragFinish(ctypes.c_void_p(hdrop))
+        self.queue.extend(paths)
+
+    def take(self):
+        if not self.queue:
+            return []
+        got = list(self.queue)
+        del self.queue[:]
+        return got
+
+
 class Clip(object):
     """一路视频：路径、帧率、总帧数、按时间取帧"""
 
@@ -270,7 +337,8 @@ class App(object):
         self.tc_label.pack(side="left")
 
         # 状态栏在最底，时间轴压在其上，画面占剩下的全部空间
-        self.status = tk.Label(root, text="打开两个视频开始对比", bg=C_BG, fg=C_DIM, font=FONT_S, anchor="w")
+        self.status = tk.Label(root, text="把视频拖进窗口：先 A，后 B（也可以点“打开 A / 打开 B”）",
+                               bg=C_BG, fg=C_DIM, font=FONT_S, anchor="w")
         self.status.pack(side="bottom", fill="x", padx=12, pady=(2, 6))
 
         self.tl = tk.Canvas(root, bg=C_BG2, height=self.TL_H, highlightthickness=0, bd=0)
@@ -296,7 +364,89 @@ class App(object):
         root.bind("<Control-O>", lambda e: self.open_b())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
+        # 接收拖入的视频文件
+        try:
+            self.drop = FileDrop(root)
+            root.after(120, self._poll_drop)
+        except Exception:
+            self.drop = None
+
     # ---------- 打开 / 状态
+    VID_EXT = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg")
+
+    def on_files_dropped(self, paths):
+        """拖放回调在 Windows 消息里，转到 Tk 主循环再处理"""
+        self.root.after(0, lambda: self._take_files(paths))
+
+    def _poll_drop(self):
+        try:
+            if self.drop is not None:
+                got = self.drop.take()
+                if got:
+                    self._take_files(got)
+        finally:
+            self.root.after(120, self._poll_drop)
+
+    def _take_files(self, paths):
+        vids = [p for p in paths if os.path.splitext(p)[1].lower() in self.VID_EXT]
+        if not vids:
+            messagebox.showwarning(APP_NAME, "只支持视频文件：\n" + "\n".join(
+                os.path.basename(p) for p in paths[:5]))
+            return
+        for p in vids:
+            if not self.a:
+                self.load("a", p)
+            elif not self.b:
+                self.load("b", p)
+            else:
+                slot = self.ask_slot(p)
+                if slot:
+                    self.load(slot, p)
+
+    def ask_slot(self, path):
+        """A / B 都已有片时，问要替换哪一轨"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("替换哪个轨道")
+        dlg.configure(bg=C_BG)
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        ans = {"v": None}
+
+        tk.Label(dlg, text="A、B 都已有视频，这条要放到哪里？\n" + os.path.basename(path),
+                 bg=C_BG, fg=C_FG, font=FONT, justify="left", wraplength=380,
+                 anchor="w").pack(padx=20, pady=(16, 10), fill="x")
+
+        row = tk.Frame(dlg, bg=C_BG)
+        row.pack(padx=20, pady=(0, 12))
+
+        def pick(v):
+            ans["v"] = v
+            dlg.destroy()
+
+        for key, color, clip in (("a", C_TRACK_A, self.a), ("b", C_TRACK_B, self.b)):
+            col = tk.Frame(row, bg=C_BG)
+            col.pack(side="left", padx=(0, 12))
+            tk.Button(col, text="替换 " + key.upper(), command=lambda k=key: pick(k),
+                      bg=color, fg="#ffffff", activebackground=color, activeforeground="#ffffff",
+                      relief="flat", bd=0, font=FONT_B, width=10, pady=6,
+                      cursor="hand2").pack(fill="x")
+            tk.Label(col, text=(clip.name if clip else "（空）"), bg=C_BG, fg=C_DIM, font=FONT_S,
+                     width=22, anchor="w", wraplength=180).pack(pady=(4, 0))
+
+        tk.Button(dlg, text="取消", command=dlg.destroy, bg=C_BG2, fg=C_FG,
+                  activebackground="#333333", activeforeground=C_FG, relief="flat", bd=0,
+                  font=FONT_S, padx=18, pady=3, cursor="hand2").pack(pady=(0, 14))
+
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        dlg.update_idletasks()
+        w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry("+%d+%d" % (max(0, self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2),
+                                 max(0, self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2)))
+        dlg.grab_set()
+        dlg.focus_force()
+        self.root.wait_window(dlg)
+        return ans["v"]
+
     def open_a(self):
         p = filedialog.askopenfilename(title="选择 A 视频", filetypes=VIDEO_FILTER)
         if p:
@@ -356,6 +506,8 @@ class App(object):
             parts.append("B 偏移 %+.2fs" % (self.b_start - self.a_start))
         if self.a or self.b:
             parts.append("拖画面扫帧 · 抓红色把手移擦除线")
+        else:
+            parts.append("把视频拖进窗口：先 A，后 B")
         self.status.configure(text="   ·   ".join(parts), fg=(C_ACCENT if (self.a and self.b and not ov) else C_DIM))
 
     # ---------- 时间轴范围
