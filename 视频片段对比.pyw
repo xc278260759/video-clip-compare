@@ -215,7 +215,7 @@ class App(object):
     def build_ui(self):
         root = self.root
         root.title(APP_NAME)
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
         ico = os.path.join(base, "视频片段对比.ico")
         png = os.path.join(base, "视频片段对比.png")
         # 任务栏图标靠 iconphoto + AppUserModelID；标题栏靠 iconbitmap
