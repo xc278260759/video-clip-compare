@@ -206,18 +206,54 @@ def fit_into(img, W, H):
     return canvas
 
 
-def compose(a_img, b_img, mode, wipe, alpha, W, H):
-    """把 A/B 两帧合成为一张画布"""
+def _place(canvas, img, scale, cx, cy):
+    """把 img 按 scale 缩放后，以 (cx, cy) 为中心贴到 canvas，超出部分裁掉。"""
+    if img is None:
+        return
+    ih, iw = img.shape[:2]
+    nw = max(1, int(round(iw * scale)))
+    nh = max(1, int(round(ih * scale)))
+    interp = cv2.INTER_AREA if scale <= 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(img, (nw, nh), interpolation=interp)
+    x0 = int(round(cx - nw / 2.0))
+    y0 = int(round(cy - nh / 2.0))
+    X0, Y0 = max(0, x0), max(0, y0)
+    X1, Y1 = min(canvas.shape[1], x0 + nw), min(canvas.shape[0], y0 + nh)
+    if X1 <= X0 or Y1 <= Y0:
+        return
+    canvas[Y0:Y1, X0:X1] = resized[Y0 - y0:Y1 - y0, X0 - x0:X1 - x0]
+
+
+def compose(a_img, b_img, mode, wipe, alpha, W, H, zoom=None):
+    """把 A/B 两帧合成为一张画布。
+
+    缩放与对齐以 A 为基准：zoom=None 表示“适合”（按 A 的尺寸缩放到窗口内），
+    其余为倍率（1.0=100%，A 的像素与画布 1:1）。B 与 A 同心对齐。
+    """
+    base = a_img if a_img is not None else b_img
+    if base is None:
+        return np.zeros((H, W, 3), np.uint8)
+    bw, bh = base.shape[1], base.shape[0]
+
+    def fit_scale(rw, rh):
+        if zoom:
+            return float(zoom)
+        return min(rw / float(bw), rh / float(bh))
+
     if mode == "side":
         half = W // 2
+        s = fit_scale(half, H)
         out = np.zeros((H, W, 3), np.uint8)
-        out[:, :half] = fit_into(a_img, half, H)
-        out[:, half:] = fit_into(b_img, W - half, H)
+        _place(out, a_img, s, half / 2.0, H / 2.0)
+        _place(out, b_img, s, half + (W - half) / 2.0, H / 2.0)
         cv2.line(out, (half, 0), (half, H - 1), (60, 60, 60), 1)
         return out
 
-    A = fit_into(a_img, W, H)
-    B = fit_into(b_img, W, H)
+    s = fit_scale(W, H)
+    A = np.zeros((H, W, 3), np.uint8)
+    _place(A, a_img, s, W / 2.0, H / 2.0)
+    B = np.zeros((H, W, 3), np.uint8)
+    _place(B, b_img, s, W / 2.0, H / 2.0)
 
     if a_img is None and b_img is None:
         return A
@@ -257,6 +293,7 @@ class App(object):
         self.mode = "wipe"
         self.wipe = 0.5
         self.alpha = 0.5
+        self.zoom = None          # None=适合；0.5/1.0/2.0=实际倍率（以 A 为基准）
         self.playing = False
         self.v0 = 0.0
         self.v1 = 10.0
@@ -319,6 +356,14 @@ class App(object):
         self.mode_menu.configure(bg=C_BG2, fg=C_FG, activebackground="#333333", activeforeground=C_FG,
                                  relief="flat", bd=0, highlightthickness=0, font=FONT_S, width=6)
         self.mode_menu.pack(side="left", padx=(0, 12))
+
+        tk.Label(top, text="显示", bg=C_BG, fg=C_DIM, font=FONT_S).pack(side="left", padx=(0, 4))
+        self.view_var = tk.StringVar(value="适合")
+        self.view_menu = tk.OptionMenu(top, self.view_var, "适合", "50%", "100%", "200%",
+                                       command=self.on_view)
+        self.view_menu.configure(bg=C_BG2, fg=C_FG, activebackground="#333333", activeforeground=C_FG,
+                                 relief="flat", bd=0, highlightthickness=0, font=FONT_S, width=5)
+        self.view_menu.pack(side="left", padx=(0, 12))
 
         tk.Label(top, text="透明度", bg=C_BG, fg=C_DIM, font=FONT_S).pack(side="left", padx=(0, 2))
         self.alpha_var = tk.DoubleVar(value=50)
@@ -559,7 +604,7 @@ class App(object):
             return
         a_img = self.a.frame_at(self.t - self.a_start) if self.a else None
         b_img = self.b.frame_at(self.t - self.b_start) if self.b else None
-        img = compose(a_img, b_img, self.mode, self.wipe, self.alpha, self.view_w, self.view_h)
+        img = compose(a_img, b_img, self.mode, self.wipe, self.alpha, self.view_w, self.view_h, self.zoom)
         pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         self.photo = ImageTk.PhotoImage(pil)
         c = self.screen
@@ -823,6 +868,12 @@ class App(object):
             if name == label:
                 self.mode = key
                 break
+        self.render()
+
+    VIEW_ZOOM = {"适合": None, "50%": 0.5, "100%": 1.0, "200%": 2.0}
+
+    def on_view(self, label):
+        self.zoom = self.VIEW_ZOOM.get(label)
         self.render()
 
     def on_alpha(self, value):
